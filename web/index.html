@@ -431,6 +431,15 @@ const EXPLOITS=[
 // STATE
 // =============================================================================
 let selContracts=new Set(), cgContracts=new Set(), allChainData=[], generatedFiles=null;
+// Auto-detect backend API (if server.py is running)
+let API_BASE='';
+async function detectBackend(){
+  try{
+    const r=await fetch('/api/health',{signal:AbortSignal.timeout(1500)});
+    if(r.ok){API_BASE='';console.log('Backend API detected')}
+  }catch(e){API_BASE=null;console.log('No backend — using direct API calls')}
+}
+detectBackend();
 
 // =============================================================================
 // INIT
