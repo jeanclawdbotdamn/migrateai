@@ -1,0 +1,29 @@
+{
+  "_comment": "Wormhole NTT config for spookyswap migration from Ethereum",
+  "_docs": "https://wormhole.com/docs/products/token-transfers/native-token-transfers/",
+  "network": "Mainnet",
+  "chains": {
+    "ethereum": {
+      "mode": "burning",
+      "manager": "<DEPLOY_NTT_MANAGER_ADDRESS>",
+      "token": "<SOURCE_TOKEN_ADDRESS>",
+      "transceiver": {
+        "type": "wormhole",
+        "address": "<DEPLOY_TRANSCEIVER_ADDRESS>"
+      }
+    },
+    "solana": {
+      "mode": "burning",
+      "manager": "<DEPLOY_NTT_MANAGER_PROGRAM_ID>",
+      "token": "<NEW_SPL_TOKEN_MINT>",
+      "transceiver": {
+        "type": "wormhole",
+        "address": "<DEPLOY_TRANSCEIVER_PROGRAM_ID>"
+      }
+    }
+  },
+  "rateLimits": {
+    "outbound": "1000000000000",
+    "inbound": "1000000000000"
+  }
+}

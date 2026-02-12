@@ -1,0 +1,20 @@
+[package]
+name = "spookyswap"
+version = "0.1.0"
+description = "Migrated from Ethereum using MigrateAI"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "spookyswap"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = "0.31.1"
+anchor-spl = "0.31.1"
