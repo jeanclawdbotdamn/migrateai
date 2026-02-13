@@ -447,10 +447,10 @@ detectBackend();
 function init(){
   // Populate selects
   ['srcChain','tgtChain'].forEach(id=>{
-    const el=$(id);
+    const el=document.getElementById(id);
     CHAINS.forEach(c=>el.innerHTML+=`<option value="${c.toLowerCase()}">${c}</option>`);
   });
-  $(srcChain).value='fantom'; $(tgtChain).value='solana';
+  document.getElementById('srcChain').value='fantom'; document.getElementById('tgtChain').value='solana';
 
   // Tags for analyze
   mkTags('cTags',selContracts);
@@ -502,11 +502,11 @@ async function fetchHeroData(){
 // ANALYZE
 // =============================================================================
 async function analyze(){
-  const src=$(srcChain).value, tgt=$(tgtChain).value, proj=$(projName).value||'Your Project';
+  const src=$('srcChain').value, tgt=$('tgtChain').value, proj=$('projName').value||'Your Project';
   if(!src||!tgt)return alert('Select both chains');
   if(src===tgt)return alert('Source and target must differ');
 
-  const btn=$(goBtn); btn.disabled=true; btn.textContent='⏳ Analyzing…';
+  const btn=$('goBtn'); btn.disabled=true; btn.textContent='⏳ Analyzing…';
   $('loader').classList.add('on'); $('results').innerHTML='';
 
   const steps=['Fetching chain health from DeFi Llama…','Querying WormholeScan bridge data…','Analyzing bridge routes & risks…','Evaluating contract migration complexity…','Scoring overall feasibility…','Generating migration playbook…'];
