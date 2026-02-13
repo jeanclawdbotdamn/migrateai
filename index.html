@@ -906,27 +906,84 @@ function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(
 
 async function downloadCode(){
   if(!generatedFiles)return;
-  // Simple ZIP implementation (store method, no compression — keeps it dependency-free)
+  // Pure JS ZIP generator (store method, no compression — zero dependencies)
   const files=Object.entries(generatedFiles);
   const enc=new TextEncoder();
+  const parts=[];
+  const centralDir=[];
+  let offset=0;
 
-  // Use JSZip-like approach with Blob
-  // Since we want zero deps, create a simple tar-like concatenation or just multi-file download
-  // Actually, let's create individual file downloads packaged as a single blob
-  // Simplest: download as a shell script that creates the files
-
-  let script='#!/bin/bash\n# MigrateAI Generated Project\n# Run: bash setup.sh\n\nset -e\n\n';
   for(const [path,content] of files){
-    const dir=path.includes('/')?path.substring(0,path.lastIndexOf('/')):'';
-    if(dir)script+=`mkdir -p "${dir}"\n`;
-    // Escape content for heredoc
-    const escaped=content.replace(/\\/g,'\\\\').replace(/\$/g,'\\$');
-    script+=`cat > "${path}" << 'MIGRATEAI_EOF'\n${content}\nMIGRATEAI_EOF\n\n`;
-  }
-  script+='echo "✅ Project scaffolded! Run: yarn install && anchor build"\n';
+    const nameBytes=enc.encode(path);
+    const dataBytes=enc.encode(content);
+    const crc=crc32(dataBytes);
 
-  download(`migrateai-${$('cgName').value||'project'}.sh`,script,'text/x-shellscript');
+    // Local file header
+    const local=new Uint8Array(30+nameBytes.length+dataBytes.length);
+    const lv=new DataView(local.buffer);
+    lv.setUint32(0,0x04034b50,true); // signature
+    lv.setUint16(4,20,true); // version needed
+    lv.setUint16(6,0,true); // flags
+    lv.setUint16(8,0,true); // compression (store)
+    lv.setUint16(10,0,true); // mod time
+    lv.setUint16(12,0,true); // mod date
+    lv.setUint32(14,crc,true); // crc32
+    lv.setUint32(18,dataBytes.length,true); // compressed size
+    lv.setUint32(22,dataBytes.length,true); // uncompressed size
+    lv.setUint16(26,nameBytes.length,true); // name length
+    lv.setUint16(28,0,true); // extra length
+    local.set(nameBytes,30);
+    local.set(dataBytes,30+nameBytes.length);
+    parts.push(local);
+
+    // Central directory entry
+    const cd=new Uint8Array(46+nameBytes.length);
+    const cv=new DataView(cd.buffer);
+    cv.setUint32(0,0x02014b50,true); // signature
+    cv.setUint16(4,20,true); // version made by
+    cv.setUint16(6,20,true); // version needed
+    cv.setUint16(8,0,true); // flags
+    cv.setUint16(10,0,true); // compression
+    cv.setUint16(12,0,true); // mod time
+    cv.setUint16(14,0,true); // mod date
+    cv.setUint32(16,crc,true); // crc32
+    cv.setUint32(20,dataBytes.length,true); // compressed
+    cv.setUint32(24,dataBytes.length,true); // uncompressed
+    cv.setUint16(28,nameBytes.length,true); // name length
+    cv.setUint16(30,0,true); // extra length
+    cv.setUint16(32,0,true); // comment length
+    cv.setUint16(34,0,true); // disk start
+    cv.setUint16(36,0,true); // internal attrs
+    cv.setUint32(38,0,true); // external attrs
+    cv.setUint32(42,offset,true); // local header offset
+    cd.set(nameBytes,46);
+    centralDir.push(cd);
+
+    offset+=local.length;
+  }
+
+  // End of central directory
+  let cdSize=centralDir.reduce((s,c)=>s+c.length,0);
+  const ecd=new Uint8Array(22);
+  const ev=new DataView(ecd.buffer);
+  ev.setUint32(0,0x06054b50,true);
+  ev.setUint16(4,0,true);ev.setUint16(6,0,true);
+  ev.setUint16(8,files.length,true);
+  ev.setUint16(10,files.length,true);
+  ev.setUint32(12,cdSize,true);
+  ev.setUint32(16,offset,true);
+  ev.setUint16(20,0,true);
+
+  const blob=new Blob([...parts,...centralDir,ecd],{type:'application/zip'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`migrateai-${$('cgName').value||'project'}.zip`;
+  a.click();URL.revokeObjectURL(a.href);
 }
+
+// CRC32 lookup table
+const crc32Table=(()=>{const t=new Uint32Array(256);for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=(c&1)?0xEDB88320^(c>>>1):c>>>1;t[i]=c}return t})();
+function crc32(buf){let c=0xFFFFFFFF;for(let i=0;i<buf.length;i++)c=crc32Table[(c^buf[i])&0xFF]^(c>>>8);return(c^0xFFFFFFFF)>>>0;}
 
 // Code generation templates
 const CODEGEN={
