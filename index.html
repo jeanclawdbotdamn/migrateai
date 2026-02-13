@@ -296,9 +296,45 @@ footer .row{display:flex;justify-content:center;gap:24px;margin-top:8px;flex-wra
 
   <!-- ========== TAB: CODE GEN ========== -->
   <div class="tab-panel" id="tab-codegen">
-    <div class="card">
+    <!-- Solidity Input Card -->
+    <div class="card" style="margin-bottom:20px">
+      <h2>🔄 Paste Solidity → Get Anchor</h2>
+      <p style="color:var(--text2);margin-bottom:16px">Paste your Solidity contract or a GitHub repo URL. MigrateAI detects the contract patterns and auto-generates the Solana/Anchor equivalent.</p>
+      <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+        <button class="btn btn-ghost" style="flex:1;min-width:140px" onclick="setSolidityMode('paste')" id="mPaste">📋 Paste Code</button>
+        <button class="btn btn-ghost" style="flex:1;min-width:140px" onclick="setSolidityMode('repo')" id="mRepo">🔗 GitHub URL</button>
+        <button class="btn btn-ghost" style="flex:1;min-width:140px" onclick="setSolidityMode('manual')" id="mManual">🏷️ Pick Patterns</button>
+      </div>
+      <!-- Paste mode -->
+      <div id="solPasteMode" style="display:none">
+        <div class="form-group" style="margin-bottom:12px">
+          <label>Solidity Source Code</label>
+          <textarea class="form-input" id="solInput" rows="12" placeholder="// SPDX-License-Identifier: MIT&#10;pragma solidity ^0.8.0;&#10;&#10;import '@openzeppelin/contracts/token/ERC20/ERC20.sol';&#10;&#10;contract MyToken is ERC20 {&#10;    constructor() ERC20('MyToken', 'MTK') {&#10;        _mint(msg.sender, 1000000 * 10**18);&#10;    }&#10;}" style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;resize:vertical"></textarea>
+        </div>
+        <button class="btn btn-primary" onclick="analyzeSolidity()" style="width:100%">🔍 Detect Patterns & Generate</button>
+      </div>
+      <!-- Repo mode -->
+      <div id="solRepoMode" style="display:none">
+        <div class="form-group" style="margin-bottom:12px">
+          <label>GitHub Repository URL</label>
+          <input class="form-input" id="repoUrl" placeholder="https://github.com/user/repo or user/repo">
+        </div>
+        <button class="btn btn-primary" onclick="analyzeRepo()" id="repoBtn" style="width:100%">🔍 Fetch Contracts & Analyze</button>
+      </div>
+      <!-- Detection results -->
+      <div id="detectionResults" style="display:none;margin-top:16px">
+        <div style="padding:16px;background:var(--bg3);border-radius:var(--radius);border:1px solid var(--border)">
+          <h3 style="margin-bottom:8px">📊 Detected Patterns</h3>
+          <div id="detectedPatterns"></div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap" id="detectedConfidence"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual / Generate Card -->
+    <div class="card" id="manualCard">
       <h2>⚡ Anchor Project Generator</h2>
-      <p style="color:var(--text2);margin-bottom:16px">Generate a complete Solana Anchor project scaffold from EVM contract patterns. Includes state accounts, instructions, tests, Wormhole NTT config, and a migration guide.</p>
+      <p style="color:var(--text2);margin-bottom:16px">Generate a complete Solana Anchor project scaffold. Includes state accounts, instructions, tests, Wormhole NTT config, and a migration guide.</p>
       <div class="form-group" style="margin-bottom:16px">
         <label>Project Name</label>
         <input class="form-input" id="cgName" placeholder="e.g., my_defi_protocol" value="my_project">
@@ -805,6 +841,206 @@ function quickAnalyze(chain){
 // =============================================================================
 // CODE GENERATOR
 // =============================================================================
+// =============================================================================
+// SOLIDITY ANALYZER — Paste code or repo URL → detect patterns → generate
+// =============================================================================
+
+const SOL_PATTERNS = [
+  {name:'ERC-20', signals:['ERC20','IERC20','_mint','_burn','totalSupply','balanceOf','transfer(','allowance','approve(','transferFrom'], weight:1},
+  {name:'ERC-721', signals:['ERC721','IERC721','tokenURI','ownerOf','safeTransferFrom','_safeMint','tokenOfOwnerByIndex'], weight:1},
+  {name:'AMM/DEX', signals:['swap(','addLiquidity','removeLiquidity','getReserves','getAmountOut','UniswapV2','IUniswap','constant product','k = ','sqrtPrice','pool.swap'], weight:1.5},
+  {name:'Lending/Borrowing', signals:['borrow(','repay(','liquidat','collateral','interestRate','utilizationRate','healthFactor','Compound','Aave','cToken','aToken'], weight:1.5},
+  {name:'Staking', signals:['stake(','unstake(','claimReward','rewardPerToken','earned(','staking','rewardRate','stakingToken','rewardsToken'], weight:1},
+  {name:'Governance/DAO', signals:['propose(','castVote','execute(','queue(','proposalId','Governor','TimelockController','quorum','votingPeriod','Votes'], weight:1},
+  {name:'Vault/Yield', signals:['deposit(','withdraw(','totalAssets','convertToShares','convertToAssets','ERC4626','vault','strategy','harvest','yield'], weight:1},
+  {name:'Bridge', signals:['bridge(','relayer','messageHash','crossChain','LayerZero','Wormhole','CCIP','bridgeToken','nonce','destination chain'], weight:1.5},
+  {name:'Oracle Consumer', signals:['Chainlink','AggregatorV3','latestRoundData','priceFeed','getLatestPrice','oracle','dataFeed'], weight:1},
+  {name:'Multisig', signals:['confirmTransaction','submitTransaction','executeTransaction','isConfirmed','required','numConfirmations','owners','Gnosis','Safe'], weight:1},
+];
+
+let solidityMode='manual';
+
+function setSolidityMode(mode){
+  solidityMode=mode;
+  $('solPasteMode').style.display=mode==='paste'?'block':'none';
+  $('solRepoMode').style.display=mode==='repo'?'block':'none';
+  $('manualCard').style.display=(mode==='manual'||mode==='paste'||mode==='repo')?'block':'none';
+  $('mPaste').classList.toggle('btn-primary',mode==='paste');
+  $('mPaste').classList.toggle('btn-ghost',mode!=='paste');
+  $('mRepo').classList.toggle('btn-primary',mode==='repo');
+  $('mRepo').classList.toggle('btn-ghost',mode!=='repo');
+  $('mManual').classList.toggle('btn-primary',mode==='manual');
+  $('mManual').classList.toggle('btn-ghost',mode!=='manual');
+  if(mode==='manual')$('detectionResults').style.display='none';
+}
+
+function detectPatterns(code){
+  const results=[];
+  const codeLower=code.toLowerCase();
+  const codeOrig=code;
+
+  for(const pat of SOL_PATTERNS){
+    let score=0, matched=[];
+    for(const sig of pat.signals){
+      // Case-insensitive for keywords, case-sensitive for specific names
+      const isName=sig[0]===sig[0].toUpperCase()&&sig.length>3;
+      const found=isName?codeOrig.includes(sig):codeLower.includes(sig.toLowerCase());
+      if(found){score+=pat.weight;matched.push(sig)}
+    }
+    if(score>0){
+      const confidence=Math.min(100,Math.round((score/pat.signals.length)*100*pat.weight));
+      results.push({pattern:pat.name, score, matched, confidence, total:pat.signals.length});
+    }
+  }
+
+  results.sort((a,b)=>b.confidence-a.confidence);
+  return results;
+}
+
+function showDetectionResults(results, sourceInfo){
+  const el=$('detectedPatterns');
+  const conf=$('detectedConfidence');
+  
+  if(!results.length){
+    el.innerHTML='<p style="color:var(--yellow)">⚠️ No recognized patterns found. Try pasting more code or selecting patterns manually below.</p>';
+    conf.innerHTML='';
+    $('detectionResults').style.display='block';
+    return;
+  }
+
+  let html='<div style="display:flex;flex-direction:column;gap:8px">';
+  for(const r of results){
+    const color=r.confidence>=60?'var(--green)':r.confidence>=30?'var(--yellow)':'var(--text3)';
+    html+=`<div style="display:flex;align-items:center;gap:12px">
+      <span style="min-width:140px;font-weight:600">${r.pattern}</span>
+      <div style="flex:1;height:8px;background:var(--bg);border-radius:4px;overflow:hidden">
+        <div style="width:${r.confidence}%;height:100%;background:${color};border-radius:4px"></div>
+      </div>
+      <span style="min-width:45px;text-align:right;color:${color};font-weight:600">${r.confidence}%</span>
+    </div>`;
+  }
+  html+='</div>';
+  
+  if(sourceInfo)html+=`<p style="color:var(--text3);margin-top:8px;font-size:0.85rem">${sourceInfo}</p>`;
+  
+  el.innerHTML=html;
+  
+  // Show matched signals
+  const allMatched=results.flatMap(r=>r.matched.map(m=>({sig:m,pat:r.pattern})));
+  conf.innerHTML=allMatched.slice(0,15).map(m=>
+    `<span style="padding:4px 10px;background:var(--bg);border:1px solid var(--border);border-radius:20px;font-size:0.8rem;color:var(--text2)">${m.sig} <span style="color:var(--text3)">→ ${m.pat}</span></span>`
+  ).join('');
+  
+  $('detectionResults').style.display='block';
+
+  // Auto-select detected patterns in the tag selector
+  const highConfidence=results.filter(r=>r.confidence>=20);
+  for(const r of highConfidence){
+    // Click the matching tag in cgTags
+    const tags=document.querySelectorAll('#cgTags .tag');
+    tags.forEach(tag=>{
+      if(tag.textContent===r.pattern&&!tag.classList.contains('on')){
+        tag.click();
+      }
+    });
+  }
+}
+
+function analyzeSolidity(){
+  const code=$('solInput').value.trim();
+  if(!code){alert('Paste some Solidity code first');return}
+  
+  const results=detectPatterns(code);
+  
+  // Try to extract contract name for project name
+  const nameMatch=code.match(/contract\s+(\w+)/);
+  if(nameMatch)$('cgName').value=nameMatch[1].replace(/([A-Z])/g,'_$1').toLowerCase().replace(/^_/,'');
+  
+  // Detect source chain hints
+  const chainHints=[];
+  if(/polygon|matic/i.test(code))chainHints.push('Polygon');
+  if(/bsc|binance|pancake/i.test(code))chainHints.push('BSC');
+  if(/avalanche|avax|joe/i.test(code))chainHints.push('Avalanche');
+  if(/fantom|spooky/i.test(code))chainHints.push('Fantom');
+  if(/arbitrum/i.test(code))chainHints.push('Arbitrum');
+  if(/optimism/i.test(code))chainHints.push('Optimism');
+  if(chainHints.length)$('cgSource').value=chainHints[0];
+  
+  const lines=code.split('\n').length;
+  const imports=(code.match(/import /g)||[]).length;
+  const functions=(code.match(/function /g)||[]).length;
+  showDetectionResults(results, `Analyzed ${lines} lines, ${imports} imports, ${functions} functions`);
+}
+
+async function analyzeRepo(){
+  const input=$('repoUrl').value.trim();
+  if(!input){alert('Enter a GitHub repo URL');return}
+  
+  // Parse repo URL
+  let owner,repo;
+  const urlMatch=input.match(/github\.com\/([^\/]+)\/([^\/\s?#]+)/);
+  const shortMatch=input.match(/^([^\/]+)\/([^\/\s]+)$/);
+  if(urlMatch){owner=urlMatch[1];repo=urlMatch[2]}
+  else if(shortMatch){owner=shortMatch[1];repo=shortMatch[2]}
+  else{alert('Enter a valid GitHub URL or owner/repo format');return}
+  
+  repo=repo.replace(/\.git$/,'');
+  const btn=$('repoBtn');
+  btn.disabled=true;btn.textContent='⏳ Fetching contracts...';
+  
+  try{
+    // Fetch repo tree to find .sol files
+    const treeResp=await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`);
+    let tree;
+    if(treeResp.ok){tree=await treeResp.json()}
+    else{
+      // Try master branch
+      const masterResp=await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/master?recursive=1`);
+      if(!masterResp.ok)throw new Error('Could not fetch repo tree');
+      tree=await masterResp.json();
+    }
+    
+    // Find Solidity files
+    const solFiles=tree.tree.filter(f=>f.path.endsWith('.sol')&&f.type==='blob');
+    
+    if(!solFiles.length){
+      showDetectionResults([], `No .sol files found in ${owner}/${repo}`);
+      return;
+    }
+    
+    // Fetch up to 5 largest .sol files (likely the main contracts)
+    const toFetch=solFiles.slice(0,8);
+    let allCode='';
+    let fetched=0;
+    
+    for(const f of toFetch){
+      try{
+        const resp=await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${f.path}`);
+        if(resp.ok){
+          const data=await resp.json();
+          if(data.content){
+            allCode+='\n// === '+f.path+' ===\n'+atob(data.content)+'\n';
+            fetched++;
+          }
+        }
+      }catch(e){}
+    }
+    
+    $('cgName').value=repo.replace(/-/g,'_').toLowerCase();
+    
+    const results=detectPatterns(allCode);
+    showDetectionResults(results, `Fetched ${fetched}/${solFiles.length} .sol files from ${owner}/${repo}`);
+    
+  }catch(e){
+    showDetectionResults([], `Error: ${e.message}`);
+  }finally{
+    btn.disabled=false;btn.textContent='🔍 Fetch Contracts & Analyze';
+  }
+}
+
+// Initialize with manual mode
+setTimeout(()=>setSolidityMode('manual'),100);
+
 function generateCode(){
   const name=$('cgName').value.trim()||'my_project';
   const source=$('cgSource').value.trim()||'Ethereum';
