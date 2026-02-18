@@ -19,6 +19,7 @@ Solana Graveyard Hack Context:
   Launched Nov 2025 with Monad's MON as first token.
 """
 
+import argparse
 import json
 import sys
 import os
@@ -134,6 +135,30 @@ def check_sunrise_eligibility(source_chain: str) -> dict:
     }
 
 
+def compute_migration_score(feas_score: float, risk_score: float, complexity: float, sunrise: dict) -> int:
+    """
+    Compute migration score using weighted formula.
+    Formula: feas_score*0.3 + (100-risk_score)*0.3 + (100-complexity)*0.2 + bridge_bonus
+    Bridge bonus: +15 sunrise, +8 wormhole, +2 any bridge, -10 none.
+    """
+    if sunrise.get("sunrise_ready"):
+        bridge_bonus = 15
+    elif sunrise.get("has_wormhole_bridge"):
+        bridge_bonus = 8
+    elif sunrise.get("bridge_count", 0) > 0:
+        bridge_bonus = 2
+    else:
+        bridge_bonus = -10
+
+    score = (
+        feas_score * 0.3 +
+        (100 - risk_score) * 0.3 +
+        (100 - complexity) * 0.2 +
+        bridge_bonus
+    )
+    return max(0, min(100, int(score)))
+
+
 def analyze_graveyard_chain(chain_name: str) -> dict:
     """
     Full graveyard-to-Solana analysis for a single chain.
@@ -176,14 +201,9 @@ def analyze_graveyard_chain(chain_name: str) -> dict:
     # Overall migration score (0-100)
     feas_score = comparison.get("feasibility_score", 50) if "feasibility_score" in comparison else 50
     risk_score = risk.get("overall_risk_score", 50)
-    bridge_bonus = 10 if sunrise.get("sunrise_ready") else 5 if sunrise.get("has_wormhole_bridge") else -10
+    complexity_val = complexity.get("complexity_score", 50) if isinstance(complexity, dict) else 50
 
-    migration_score = max(0, min(100, int(
-        feas_score * 0.4 +
-        (100 - risk_score) * 0.4 +
-        bridge_bonus +
-        (10 if health.get("tvl_trend") == "declining" else 0)
-    )))
+    migration_score = compute_migration_score(feas_score, risk_score, complexity_val, sunrise)
 
     result["migration_score"] = migration_score
     result["migration_grade"] = (
@@ -416,6 +436,56 @@ def generate_sunrise_report(source_chain: str, project_name: str = None) -> str:
     return report
 
 
+def batch_rank_graveyard(output: str = "markdown") -> list:
+    """
+    Iterate GRAVEYARD_CANDIDATES, analyze each, sort by migration_score desc,
+    return ranked list. Print markdown table or JSON based on output param.
+    """
+    results = []
+    for chain in GRAVEYARD_CANDIDATES:
+        try:
+            r = analyze_graveyard_chain(chain)
+            results.append(r)
+        except Exception as e:
+            results.append({
+                "chain": chain,
+                "migration_score": 0,
+                "migration_grade": "F",
+                "migration_verdict": f"ERROR — {e}",
+                "error": str(e),
+            })
+
+    results.sort(key=lambda x: x.get("migration_score", 0), reverse=True)
+
+    if output == "json":
+        ranked = []
+        for i, r in enumerate(results, 1):
+            ranked.append({
+                "rank": i,
+                "chain": r.get("chain"),
+                "migration_score": r.get("migration_score", 0),
+                "migration_grade": r.get("migration_grade", "?"),
+                "migration_verdict": r.get("migration_verdict", ""),
+                "sunrise_ready": r.get("sunrise", {}).get("sunrise_ready", False),
+                "risk_level": r.get("risk", {}).get("risk_level", "N/A"),
+            })
+        print(json.dumps(ranked, indent=2))
+    else:
+        print("# Graveyard Migration Rankings: → Solana\n")
+        print("| Rank | Chain | Score | Grade | Sunrise | Verdict |")
+        print("|------|-------|-------|-------|---------|---------|")
+        for i, r in enumerate(results, 1):
+            score = r.get("migration_score", 0)
+            grade = r.get("migration_grade", "?")
+            verdict = r.get("migration_verdict", "")
+            sunrise_ready = r.get("sunrise", {}).get("sunrise_ready", False)
+            sunrise_cell = "✅" if sunrise_ready else "❌"
+            emoji = "🟢" if score >= 65 else "🟡" if score >= 45 else "🔴"
+            print(f"| {i} | {emoji} {r.get('chain', '?')} | {score}/100 | {grade} | {sunrise_cell} | {verdict} |")
+
+    return results
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
@@ -430,100 +500,98 @@ BANNER = """
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(BANNER)
-        print("Usage:")
-        print("  python sunrise_analyzer.py scan                        — Scan for dying chains")
-        print("  python sunrise_analyzer.py scan --threshold -15        — Custom decline threshold")
-        print("  python sunrise_analyzer.py check <chain>               — Check Sunrise eligibility")
-        print("  python sunrise_analyzer.py analyze <chain> [project]   — Full migration analysis")
-        print("  python sunrise_analyzer.py report <chain> [project]    — Generate Sunrise report")
-        print("  python sunrise_analyzer.py codegen <name> <types...>   — Generate Anchor project")
-        print("  python sunrise_analyzer.py batch                       — Analyze all graveyard candidates")
-        print()
-        print("Examples:")
-        print("  python sunrise_analyzer.py scan")
-        print("  python sunrise_analyzer.py check Fantom")
-        print("  python sunrise_analyzer.py analyze Fantom SpookySwap")
-        print("  python sunrise_analyzer.py report Fantom SpookySwap > report.md")
-        print("  python sunrise_analyzer.py codegen spooky_swap AMM ERC-20 Staking")
+    print(BANNER)
+
+    parser = argparse.ArgumentParser(
+        prog="sunrise_analyzer.py",
+        description="Sunrise Migration Analyzer — MigrateAI × Solana Graveyard Hack 2026",
+    )
+    parser.add_argument(
+        "--output", choices=["json", "markdown"], default="markdown",
+        help="Output format (default: markdown)",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
+
+    # scan
+    scan_parser = subparsers.add_parser("scan", help="Scan for dying chains")
+    scan_parser.add_argument(
+        "--threshold", type=float, default=-10.0,
+        help="TVL decline threshold in percent (default: -10.0)",
+    )
+    scan_parser.add_argument(
+        "--min-tvl", type=float, default=500_000,
+        help="Minimum TVL in USD (default: 500000)",
+    )
+
+    # analyze
+    analyze_parser = subparsers.add_parser("analyze", help="Full migration analysis for a chain")
+    analyze_parser.add_argument("chain", help="Source chain name")
+    analyze_parser.add_argument("project", nargs="?", default=None, help="Project name (optional)")
+
+    # batch
+    subparsers.add_parser("batch", help="Analyze all graveyard candidates and rank them")
+
+    # codegen
+    codegen_parser = subparsers.add_parser("codegen", help="Generate Anchor project scaffold")
+    codegen_parser.add_argument("name", help="Project name")
+    codegen_parser.add_argument("types", nargs="+", help="Contract types (e.g. AMM ERC-20 Staking)")
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
         return
 
-    cmd = sys.argv[1].lower()
-    args = sys.argv[2:]
+    output_fmt = args.output
 
-    if cmd == "scan":
-        print(BANNER)
-        threshold = -10.0
-        for i, a in enumerate(args):
-            if a == "--threshold" and i + 1 < len(args):
-                threshold = float(args[i + 1])
+    if args.command == "scan":
+        dying = scan_graveyard(args.threshold, args.min_tvl)
+        if output_fmt == "json":
+            print(json.dumps(dying, indent=2, default=str))
+        else:
+            if dying:
+                print(f"{'#':<4} {'Chain':<20} {'TVL':>12} {'30d Change':>12} {'Bridges':>8} {'Sunrise':>8}")
+                print("-" * 68)
+                for i, d in enumerate(dying[:25], 1):
+                    sunrise_cell = "✅" if d["sunrise_eligible"] else "❌"
+                    print(f"{i:<4} {d['chain']:<20} {d['tvl_formatted']:>12} {d['tvl_change_30d']:>+10.1f}% {d['bridge_count']:>8} {sunrise_cell:>8}")
 
-        dying = scan_graveyard(threshold)
-        if dying:
-            print(f"{'#':<4} {'Chain':<20} {'TVL':>12} {'30d Change':>12} {'Bridges':>8} {'Sunrise':>8}")
-            print("-" * 68)
-            for i, d in enumerate(dying[:25], 1):
-                sunrise = "✅" if d["sunrise_eligible"] else "❌"
-                print(f"{i:<4} {d['chain']:<20} {d['tvl_formatted']:>12} {d['tvl_change_30d']:>+10.1f}% {d['bridge_count']:>8} {sunrise:>8}")
-
-    elif cmd == "check":
-        print(BANNER)
-        if not args:
-            print("Usage: sunrise_analyzer.py check <chain>")
-            return
-        result = check_sunrise_eligibility(args[0])
-        print(json.dumps(result, indent=2, default=str))
-
-    elif cmd == "analyze":
-        print(BANNER)
-        if not args:
-            print("Usage: sunrise_analyzer.py analyze <chain> [project]")
-            return
-        chain = args[0]
-        project = args[1] if len(args) > 1 else None
+    elif args.command == "analyze":
+        chain = args.chain
         print(f"🔬 Analyzing {chain} → Solana migration...\n")
         result = analyze_graveyard_chain(chain)
-        print(f"Migration Score: {result['migration_score']}/100 (Grade {result['migration_grade']})")
-        print(f"Verdict: {result['migration_verdict']}")
-        print(f"\nFull JSON:")
-        # Print select fields to keep output manageable
-        summary = {
-            "chain": result["chain"],
-            "migration_score": result["migration_score"],
-            "migration_grade": result["migration_grade"],
-            "migration_verdict": result["migration_verdict"],
-            "chain_tvl": result.get("chain_health", {}).get("tvl_formatted"),
-            "chain_trend": result.get("chain_health", {}).get("tvl_trend"),
-            "sunrise_eligible": result.get("sunrise", {}).get("eligible"),
-            "risk_level": result.get("risk", {}).get("risk_level"),
-            "complexity": result.get("complexity", {}).get("difficulty_level"),
-            "bridges": result.get("sunrise", {}).get("bridge_count"),
-        }
-        print(json.dumps(summary, indent=2))
+        if output_fmt == "json":
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(f"Migration Score: {result['migration_score']}/100 (Grade {result['migration_grade']})")
+            print(f"Verdict: {result['migration_verdict']}")
+            print()
+            summary = {
+                "chain": result["chain"],
+                "migration_score": result["migration_score"],
+                "migration_grade": result["migration_grade"],
+                "migration_verdict": result["migration_verdict"],
+                "chain_tvl": result.get("chain_health", {}).get("tvl_formatted"),
+                "chain_trend": result.get("chain_health", {}).get("tvl_trend"),
+                "sunrise_eligible": result.get("sunrise", {}).get("eligible"),
+                "risk_level": result.get("risk", {}).get("risk_level"),
+                "complexity": result.get("complexity", {}).get("difficulty_level"),
+                "bridges": result.get("sunrise", {}).get("bridge_count"),
+            }
+            print(json.dumps(summary, indent=2))
 
-    elif cmd == "report":
-        if not args:
-            print("Usage: sunrise_analyzer.py report <chain> [project]", file=sys.stderr)
-            return
-        chain = args[0]
-        project = args[1] if len(args) > 1 else None
-        report = generate_sunrise_report(chain, project)
-        print(report)
+    elif args.command == "batch":
+        batch_rank_graveyard(output=output_fmt)
 
-    elif cmd == "codegen":
-        print(BANNER)
-        if len(args) < 2:
-            print("Usage: sunrise_analyzer.py codegen <name> <type1> [type2...]")
-            return
-        name = args[0]
-        types = args[1:]
+    elif args.command == "codegen":
+        name = args.name
+        types = args.types
         files = generate_anchor_project(name, types, "EVM")
         print(f"Generated {len(files)} files for '{name}':")
         for path in sorted(files.keys()):
             lines = files[path].count('\n') + 1
             print(f"  📄 {path} ({lines} lines)")
-        # Write files
         out_dir = os.path.join(ROOT, "generated", name)
         for path, content in files.items():
             full_path = os.path.join(out_dir, path)
@@ -531,32 +599,6 @@ def main():
             with open(full_path, "w") as f:
                 f.write(content)
         print(f"\n✅ Written to {out_dir}/")
-
-    elif cmd == "batch":
-        print(BANNER)
-        print("🔬 Batch analyzing known graveyard candidates...\n")
-        results = []
-        for chain in GRAVEYARD_CANDIDATES:
-            try:
-                r = analyze_graveyard_chain(chain)
-                results.append(r)
-                print(f"  {chain}: Score {r['migration_score']}/100 ({r['migration_grade']})")
-            except Exception as e:
-                print(f"  {chain}: ERROR — {e}")
-
-        results.sort(key=lambda x: x.get("migration_score", 0), reverse=True)
-        print(f"\n{'='*60}")
-        print("RANKED BY MIGRATION FEASIBILITY TO SOLANA:")
-        print(f"{'='*60}")
-        for i, r in enumerate(results, 1):
-            grade = r.get("migration_grade", "?")
-            score = r.get("migration_score", 0)
-            emoji = "🟢" if score >= 65 else "🟡" if score >= 45 else "🔴"
-            print(f"  {i}. {emoji} {r['chain']}: {score}/100 (Grade {grade}) — {r.get('migration_verdict', '')}")
-
-    else:
-        print(f"Unknown command: {cmd}")
-        print("Run without arguments for help.")
 
 
 if __name__ == "__main__":
