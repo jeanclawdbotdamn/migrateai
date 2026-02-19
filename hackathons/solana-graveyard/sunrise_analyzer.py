@@ -23,6 +23,7 @@ import argparse
 import json
 import sys
 import os
+import urllib.request
 from datetime import datetime
 
 # Add project root
@@ -93,9 +94,56 @@ GRAVEYARD_CANDIDATES = [
 # Sunrise-specific analysis
 # ─────────────────────────────────────────────────────────────────────────────
 
+def check_ntt_registry(source_chain: str) -> dict:
+    """
+    Query the real Wormhole NTT registry on GitHub to check deployment status.
+    """
+    url = (
+        "https://raw.githubusercontent.com/wormhole-foundation/"
+        "native-token-transfers/main/deployment/deployments.json"
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return {"ntt_deployed": False, "error": str(e)}
+
+    source_lower = source_chain.lower()
+    ntt_managers = []
+    mode = None
+
+    try:
+        deployments = data if isinstance(data, list) else (
+            [{"chain": k, **v} for k, v in data.items()]
+            if isinstance(data, dict) else []
+        )
+        for entry in deployments:
+            if source_lower in json.dumps(entry).lower():
+                for key in ("nttManager", "ntt_manager", "manager", "managerAddress"):
+                    val = entry.get(key)
+                    if isinstance(val, str):
+                        ntt_managers.append(val)
+                    elif isinstance(val, list):
+                        ntt_managers.extend(val)
+                raw_mode = entry.get("mode", entry.get("transferMode", ""))
+                if isinstance(raw_mode, str):
+                    if "burn" in raw_mode.lower():
+                        mode = "burn-and-mint"
+                    elif "lock" in raw_mode.lower():
+                        mode = "lock-and-mint"
+                    else:
+                        mode = raw_mode or None
+                return {"ntt_deployed": True, "ntt_managers": ntt_managers, "mode": mode}
+    except Exception as e:
+        return {"ntt_deployed": False, "error": str(e)}
+
+    return {"ntt_deployed": False, "ntt_managers": [], "mode": None}
+
+
 def check_sunrise_eligibility(source_chain: str) -> dict:
     """
     Check if a chain's assets can use Wormhole Sunrise to migrate to Solana.
+    Now queries the real NTT registry for deployment status.
     """
     source_lower = source_chain.lower()
 
@@ -105,12 +153,14 @@ def check_sunrise_eligibility(source_chain: str) -> dict:
     # Check if any bridge supports this → Solana
     bridges = get_available_bridges(source_chain, "Solana")
     has_wormhole = any(b["name"] == "Wormhole" for b in bridges)
-    has_ntt = any(b.get("ntt_support") for b in bridges)
-    has_sunrise = any(b.get("sunrise_support") for b in bridges)
+
+    # Real NTT registry check
+    ntt_status = check_ntt_registry(source_chain)
+    has_ntt = ntt_status.get("ntt_deployed", False)
+    sunrise_ready = has_wormhole and has_ntt
 
     # Eligibility determination
     eligible = has_wormhole  # Basic requirement
-    sunrise_ready = has_sunrise and has_ntt
 
     return {
         "source_chain": source_chain,
@@ -120,6 +170,7 @@ def check_sunrise_eligibility(source_chain: str) -> dict:
         "has_ntt_support": has_ntt,
         "sunrise_ready": sunrise_ready,
         "eligible": eligible,
+        "ntt_registry": ntt_status,
         "available_bridges": bridges,
         "bridge_count": len(bridges),
         "recommendation": (
@@ -217,6 +268,33 @@ def analyze_graveyard_chain(chain_name: str) -> dict:
         "MODERATE — Migration viable but consider costs" if migration_score >= 45 else
         "WEAK — Migration challenging, evaluate carefully"
     )
+
+    return result
+
+
+def analyze_with_codegen(chain_name: str, contract_types=None) -> dict:
+    """
+    Wraps analyze_graveyard_chain and generates Anchor scaffold preview
+    for high-scoring chains (grade A or B, score >= 65).
+    """
+    result = analyze_graveyard_chain(chain_name)
+    score = result.get("migration_score", 0)
+
+    if score >= 65:
+        project_name = chain_name.lower().replace(" ", "_") + "_migration"
+        types = contract_types or ["ERC-20", "Staking"]
+        try:
+            files = generate_anchor_project(project_name, types, chain_name)
+            lib_rs = next((c for p, c in files.items() if p.endswith("lib.rs")), None)
+            result["anchor_scaffold_preview"] = "\n".join(
+                (lib_rs or "").splitlines()[:50]
+            )
+            result["codegen_available"] = True
+        except Exception as e:
+            result["anchor_scaffold_preview"] = f"# Error: {e}"
+            result["codegen_available"] = True
+    else:
+        result["codegen_available"] = False
 
     return result
 
